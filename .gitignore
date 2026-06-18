@@ -1,0 +1,28 @@
+# MLflow outputs
+mlruns/
+outputs/
+
+# Python temporary files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local evaluation plots
+confusion_matrix.png
+feature_importance.png
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS temporary files
+.DS_Store
+Thumbs.db

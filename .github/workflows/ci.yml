@@ -1,0 +1,108 @@
+name: Workflow CI (MLflow Project & Docker Build)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  run-ci:
+    runs-on: ubuntu-latest
+
+    env:
+      HAS_DOCKER_SECRETS: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
+
+    steps:
+    # 1. Checkout repository code
+    - name: Checkout Repository Code
+      uses: actions/checkout@v4
+
+    # 2. Set up Python Environment
+    - name: Set up Python Environment
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    # 3. Install Dependencies
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas numpy scikit-learn matplotlib seaborn mlflow scikit-optimize dagshub
+
+    # 4. Run MLflow Project (Re-training)
+    - name: Run MLflow Project Training
+      run: |
+        # Menjalankan MLflow Project menggunakan mode env-manager local karena dependencies sudah diinstall di runner
+        mlflow run MLProject/ --entry-point main --env-manager local -P n_estimators=100 -P max_depth=10
+
+    # 5. Upload MLflow Artifacts (Skilled Level: Menyimpan artefak model & metrik ke GitHub)
+    - name: Upload MLflow Training Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: mlflow-training-results
+        path: |
+          mlruns/
+          confusion_matrix.png
+          feature_importance.png
+        if-no-files-found: ignore
+
+    # 6. Build Docker Image (Advance Level: Membangun image menggunakan mlflow build-docker alternatif)
+    - name: Build Docker Image
+      run: |
+        # Menulis skrip pencarian berbasis keberadaan berkas 'MLmodel' di dalam direktori mlruns
+        cat << 'EOF' > get_model_path.py
+        import glob
+        import os
+
+        def get_path():
+            # Menyisir seluruh subfolder di dalam mlruns untuk mencari file manifes MLmodel
+            mlmodel_files = glob.glob('mlruns/**/MLmodel', recursive=True)
+            
+            if mlmodel_files:
+                # Ambil file MLmodel pertama, lalu dapatkan path foldernya
+                model_folder = os.path.dirname(mlmodel_files[0])
+                return model_folder
+            
+            return 'MLProject/'
+
+        print(get_path())
+        EOF
+
+        # Eksekusi skrip dinamis untuk mendapatkan lokasi model yang valid
+        MODEL_PATH=$(python get_model_path.py)
+        echo "LOGGED_MODEL_PATH=$MODEL_PATH" >> $GITHUB_ENV
+        echo "[INFO] Model URI yang ditemukan: $MODEL_PATH"
+
+        # Validasi krusial: Jika jatuh ke fallback, hentikan langkah dengan pesan eror yang jelas
+        if [ "$MODEL_PATH" = "MLProject/" ]; then
+          echo "[ERROR] File 'MLmodel' tidak ditemukan di direktori mlruns. Pastikan skrip modelling.py Anda melakukan mlflow.sklearn.log_model() dengan benar."
+          exit 1
+        fi
+
+        # Menentukan nama image. Menggunakan fallback ke haikal1012 jika secrets kosong
+        IMAGE_NAME="haikal1012/loan-model:latest"
+        if [ "${{ env.HAS_DOCKER_SECRETS }}" = "true" ]; then
+          IMAGE_NAME="${{ secrets.DOCKER_USERNAME }}/loan-model:latest"
+        fi
+        echo "TARGET_IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+
+        # Eksekusi perintah resmi mlflow models build-docker dengan melompati pembuatan environment conda baru
+        echo "[INFO] Memulai proses kompilasi Docker Image via MLflow Models..."
+        mlflow models build-docker -m "$MODEL_PATH" -n "$IMAGE_NAME" --env-manager local
+
+    # 7. Push Docker Image to Docker Hub (Advance Level: Hanya dijalankan jika secrets tersedia)
+    - name: Log in to Docker Hub
+      if: env.HAS_DOCKER_SECRETS == 'true'
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Push Docker Image to Docker Hub
+      if: env.HAS_DOCKER_SECRETS == 'true'
+      run: |
+        # Menggunakan environment variable TARGET_IMAGE_NAME yang didefinisikan di step 6
+        echo "Pushing Docker Image: ${{ env.TARGET_IMAGE_NAME }}"
+        docker push "${{ env.TARGET_IMAGE_NAME }}"
